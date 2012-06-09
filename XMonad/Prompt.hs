@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances         #-}
 {-# LANGUAGE ImpredicativeTypes        #-}
 {-# LANGUAGE MultiParamTypeClasses     #-}
+{-# LANGUAGE TypeFamilies              #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  XMonad.Prompt
@@ -107,6 +108,11 @@ import           XMonad.Util.Run
 
 type XP = StateT XPState IO
 
+data (XPrompt a ) => Stack a = ModeStack { focus  :: !a        -- focused thing in this set
+                     , up     :: [a]       -- clowns to the left
+                     , down   :: [a] }     -- jokers to the right
+    deriving (Show, Read, Eq)
+
 data XPState =
     XPS { dpy                :: Display
         , rootw              :: !Window
@@ -130,26 +136,27 @@ data XPState =
         }
 
 data XPConfig =
-    XPC { font              :: String     -- ^ Font
-        , alwaysHighlight   :: Bool       -- ^ Keep always a completion highlighted. Highlights first option from Prompt start.
+    XPC {
+          alwaysHighlight   :: Bool       -- ^ Keep always a completion highlighted. Highlights first option from Prompt start.
+        , autoComplete      :: Maybe Int  -- ^ Just x: if only one completion remains, auto-select it
         , bgColor           :: String     -- ^ Background color
         , fgColor           :: String     -- ^ Font color
         , fgHLight          :: String     -- ^ Font color of a highlighted completion entry
         , bgHLight          :: String     -- ^ Background color of a highlighted completion entry
+        , completionKey     :: KeySym     -- ^ Key that should trigger completion
+        , changeModeKey     :: KeySym     -- ^ Key used to change mode
         , borderColor       :: String     -- ^ Border color
-        , promptBorderWidth :: !Dimension -- ^ Border width
-        , position          :: XPPosition -- ^ Position: 'Top' or 'Bottom'
+        , defaultText       :: String     -- ^ The text by default in the prompt line
+        , font              :: String     -- ^ Font
         , height            :: !Dimension -- ^ Window height
         , historySize       :: !Int       -- ^ The number of history entries to be saved
         , historyFilter     :: [String] -> [String]
                                          -- ^ a filter to determine which
                                          -- history entries to remember
+        , promptBorderWidth :: !Dimension -- ^ Border width
+        , position          :: XPPosition -- ^ Position: 'Top' or 'Bottom'
         , promptKeymap      :: M.Map (KeyMask,KeySym) (XP ())
                                          -- ^ Mapping from key combinations to actions
-        , completionKey     :: KeySym     -- ^ Key that should trigger completion
-        , changeModeKey     :: KeySym     -- ^ Key used to change mode
-        , defaultText       :: String     -- ^ The text by default in the prompt line
-        , autoComplete      :: Maybe Int  -- ^ Just x: if only one completion remains, auto-select it
         , showCompletionOnTab :: Bool     -- ^ Only show list of completions when Tab was pressed
                                           --   and delay by x microseconds
         , searchPredicate   :: String -> String -> Bool
@@ -157,22 +164,11 @@ data XPConfig =
                                           --   completion, is the completion valid?
         }
 
-type ComplFunction = String -> IO [String]
+
 
 --TODO: actiontype ActionsPerExtensionMap a = M.Map String (String -> X a)
-
--- A Mode of the prompt.
--- Each mode has a different completion function and a different action,
--- that is based on the current XPState of XPrompt instead of
---
+type ComplFunction = String -> IO [String]
 type XPMode = XPType
-
-{-data XPMode a = XPMode a{
-  name :: String
-  , modeCompletionFunction :: String -> IO [String]
-  , action :: String -> ActionsPerExtensionMap a -> X a
-}-}
-
 data XPType = forall p . XPrompt p => XPT p
 
 instance Show XPType where
@@ -183,7 +179,8 @@ instance XPrompt XPType where
     nextCompletion      (XPT t) = nextCompletion      t
     commandToComplete   (XPT t) = commandToComplete   t
     completionToCommand (XPT t) = completionToCommand t
---    actionOn            (XPMode n cf a)  = \s -> a s
+    completionFunction  (XPT t) = completionFunction  t
+    modeAction          (XPT t) = modeAction          t
 
 -- | The class prompt types must be an instance of. In order to
 -- create a prompt you need to create a data type, without parameters,
@@ -196,7 +193,6 @@ instance XPrompt XPType where
 -- >     instance XPrompt Shell where
 -- >          showXPrompt Shell = "Run: "
 class XPrompt t where
-
     -- | This method is used to print the string to be
     -- displayed in the command line window.
     showXPrompt :: t -> String
@@ -225,17 +221,9 @@ class XPrompt t where
 
     -- | This method is used to generate the autocompletion list
     completionFunction :: t -> ComplFunction
-    completionFunction _ = \s -> if (s == "" || last s == ' ') then return [] else (completionFunctionWith "locate" ["--limit","8",s] s)
-      where
-        completionFunctionWith :: String -> [String] -> String -> IO[String]
-        completionFunctionWith cmd args s | s == "" || last s == ' ' = return []
-                                          | otherwise                = do
-          paths <- fmap lines $ runProcessWithInput cmd args ""
-          return $ paths
+    completionFunction _ = \s -> if (s == "" || last s == ' ') then return ["EMPTY"] else return ["a","b","c"]
 
---    actionOn :: (XPMode a) -> String -> X a
---    actionOn m -> (action m) (command )
---    actionOn m s = (modeAction m) (highlightedAutocompletionItem s)
+    modeAction :: t -> String -> X ()
 
 data XPPosition = Top
                 | Bottom
@@ -376,14 +364,18 @@ mkXPromptWithReturn t conf compl action = do
 mkXPrompt :: XPrompt p => p -> XPConfig -> ComplFunction -> (String -> X ()) -> X ()
 mkXPrompt t conf compl action = mkXPromptWithReturn t conf compl action >> return ()
 
--- This function sends the current highlighted autocompletion item as an argument
--- to the `action` function, the one ith the type String -> X(). mkXPromptWithReturn
--- and mkXPrompt use the current XPrompt buffer's value.
-
--- This prompt overrides the value `alwaysHighlight` to true for any XPConfig,
--- because it is needed for the functionality described above.
-mkXPromptWithModes :: XPrompt p => p -> XPConfig -> [XPMode] -> (String -> X()) -> X ()
-mkXPromptWithModes t conf modeList action = do
+-- | Creates a prompt given:
+--
+-- * A non-empty list of modes
+--
+-- * `conf`, a prompt configuration
+--
+-- This prompt allows to switch between modes with `changeModeKey` in `conf`, which are instances of XPrompt.
+--
+-- The argument supplied to a promptAction is the current highlighted item, so this prompt overrides
+-- the value `alwaysHighlight` for its configuration.
+mkXPromptWithModes :: [XPMode] -> XPConfig -> X ()
+mkXPromptWithModes modeList conf = do
   XConf { display = d, theRoot = rw } <- ask
   s    <- gets $ screenRect . W.screenDetail . W.current . windowset
   hist <- io readHistory
@@ -393,37 +385,35 @@ mkXPromptWithModes t conf modeList action = do
   io $ setGraphicsExposures d gc False
   fs <- initXMF (font conf)
   numlock <- gets $ X.numberlockMask
-  let hs = fromMaybe [] $ M.lookup (showXPrompt t) hist
-      --
-      st = initState d rw w s modeList gc fs hs conf { alwaysHighlight = True} numlock
+  let
+    defaultMode = head modeList
+    hs = fromMaybe [] $ M.lookup (showXPrompt defaultMode) hist
+    st = initState d rw w s modeList gc fs hs conf { alwaysHighlight = True} numlock
   st' <- io $ execStateT runXP st
 
   releaseXMF fs
   io $ freeGC d gc
 
-  if successful st'
-    then do
-      completions <- io $ getCompletionFunction st' (commandToComplete (currentMode st') (command st')) --get current completions based on the buffers value
+  if successful st' then do
+    completions <- io $ getCompletionFunction st' (commandToComplete (currentMode st') (command st')) --get current completions based on the buffers value
        `catch` \(SomeException _) -> return []
-      let
+    let
         -- find current highlighted item in a state
-        highlightedAutocompletionItem = case completions of
-          [] -> "" -- if there is no completion, return an empty string
-          _ -> completions !! (complIndex st') -- if there is at least one autocompletion, get the current highlighted one, this works correctly if `alwaysHighlight` is set. If it is not set, this function always returns the first one, unfortunately.
+      highlightedAutocompletionItem = case completions of
+        [] -> "" -- if there is no completion, return an empty string
+        _ -> completions !! (complIndex st') -- if there is at least one autocompletion, get the current highlighted one, this works correctly if `alwaysHighlight` is set. If it is not set, this function always returns the first one, unfortunately.
 
-        prune = take (historySize conf)
+      prune = take (historySize conf)
 
       -- insert into history the buffers value
-      io $ writeHistory $ M.insertWith
-        (\xs ys -> prune . historyFilter conf $ xs ++ ys)
-        (showXPrompt t)
-        (prune $ historyFilter conf [command st'])
-        hist
-        -- we need to apply historyFilter before as well, since
-        -- otherwise the filter would not be applied if
-        -- there is no history
+    io $ writeHistory $ M.insertWith
+      (\xs ys -> prune . historyFilter conf $ xs ++ ys)
+      (showXPrompt defaultMode)
+      (prune $ historyFilter conf [command st'])
+      hist
 
-      action highlightedAutocompletionItem
+    let action = modeAction $ currentMode st'
+    action highlightedAutocompletionItem
     else
       return ()
 
@@ -837,7 +827,7 @@ printPrompt drw = do
 
 -- get the current completion function depending on the active mode
 getCompletionFunction :: XPState -> ComplFunction
-getCompletionFunction s = completionFunction $ currentMode s
+getCompletionFunction = completionFunction . currentMode
 
 -- Completions
 getCompletions :: XP [String]
