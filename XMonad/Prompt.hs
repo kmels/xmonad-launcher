@@ -97,7 +97,6 @@ import           Data.Set                     (fromList, toList)
 import           System.Directory             (getAppUserDataDirectory)
 import           System.IO
 import           System.Posix.Files
-import           XMonad.Util.Run
 -- $usage
 -- For usage examples see "XMonad.Prompt.Shell",
 -- "XMonad.Prompt.XMonad" or "XMonad.Prompt.Ssh"
@@ -107,11 +106,6 @@ import           XMonad.Util.Run
 -- * scrolling the completions that don't fit in the window (?)
 
 type XP = StateT XPState IO
-
-data (XPrompt a ) => Stack a = ModeStack { focus  :: !a        -- focused thing in this set
-                     , up     :: [a]       -- clowns to the left
-                     , down   :: [a] }     -- jokers to the right
-    deriving (Show, Read, Eq)
 
 data XPState =
     XPS { dpy                :: Display
@@ -804,7 +798,7 @@ printPrompt drw = do
   st <- get
   let (gc,(c,(d,fs))) = (gcon &&& config &&& dpy &&& fontS) st
       (prt,(com,off)) = (show . currentMode &&& command &&& offset) st
-      str = prt ++ "> " ++ com
+      str = prt ++ com
       -- break the string in 3 parts: till the cursor, the cursor and the rest
       (f,p,ss) = if off >= length com
                  then (str, " ","") -- add a space: it will be our cursor ;-)
@@ -823,7 +817,7 @@ printPrompt drw = do
   -- reverse the colors and print the "cursor" ;-)
   draw (bgColor c) (fgColor c) (x + fromIntegral fsl) y p
   -- reverse the colors and print the rest of the string
-  draw "red80" (bgColor c) (x + fromIntegral (fsl + psl)) y ss
+  draw (fgColor c) (bgColor c) (x + fromIntegral (fsl + psl)) y ss
 
 -- get the current completion function depending on the active mode
 getCompletionFunction :: XPState -> ComplFunction
