@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
 {- | Module      :  XMonad.Actions.Launcher
    Copyright   :  (C) 2012 Carlos López-Camey
    License     :  None; public domain
@@ -7,7 +6,7 @@
    Stability   :  unstable
 
    A module for opening files and directories.
-   -}
+-}
 
 
 {- $usage
@@ -20,7 +19,6 @@
    ----------------------------------------
    - How to add it to your .xmonad
    ----------------------------------------
-
 
    ----------------------------------------
    - How to use it:
@@ -35,6 +33,11 @@
    ----------------------------------------
    - XPrompt:
        - Switch to mode by name, 1. ':' at an empty buffer, 2. autocomplete name in buffer should happen, 3. switch to mode with enter (cancel stich with C-g)
+
+   - Wished commands
+     at - execute commands at a later time
+     hoogle ?
+     bash - is it possible with autocompletion ?
   -}
 
 module XMonad.Actions.Launcher(
