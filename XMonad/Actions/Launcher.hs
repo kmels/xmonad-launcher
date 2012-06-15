@@ -48,6 +48,7 @@ module XMonad.Actions.Launcher(
   , launcherPrompt
 ) where
 
+import           Data.List        (findIndex)
 import qualified Data.Map         as M
 import           Data.Maybe       (fromMaybe)
 import           System.Directory (doesDirectoryExist)
@@ -57,6 +58,7 @@ import           XMonad.Util.Run
 
 data LocateFileMode = LMode ExtensionActions
 data LocateFileRegexMode = LRMode ExtensionActions
+data HoogleMode = HMode
 data CalculatorMode = CalcMode
 
 type ExtensionActions = M.Map String (String -> X())
@@ -64,28 +66,61 @@ type ExtensionActions = M.Map String (String -> X())
 -- | Uses the program `locate` to list files
 instance XPrompt LocateFileMode where
   showXPrompt (LMode _) = "locate %s> "
-  completionFunction (LMode _) = \s -> if (s == "" || last s == ' ') then return [] else (completionFunctionWith "locate" ["--limit","5",s] s)
+  completionFunction (LMode _) = \s -> if (s == "" || last s == ' ') then return [] else (completionFunctionWith "locate" ["--limit","5",s])
   modeAction (LMode actions) fp = spawnWithActions actions fp
 
 -- | Uses the program `locate --regex` to list files
 instance XPrompt LocateFileRegexMode where
   showXPrompt (LRMode _) = "locate --regexp %s> "
-  completionFunction (LRMode _) = \s -> if (s == "" || last s == ' ') then return [] else (completionFunctionWith "locate" ["--limit","5","--regexp",s] s)
+  completionFunction (LRMode _) = \s -> if (s == "" || last s == ' ') then return [] else (completionFunctionWith "locate" ["--limit","5","--regexp",s])
   modeAction (LRMode actions) fp = spawnWithActions actions fp
 
 -- | Uses the command `calc` to compute arithmetic expressions
 instance XPrompt CalculatorMode where
   showXPrompt CalcMode = "calc %s> "
-  commandToComplete CalcMode s = s --send the whole string to `calc`
-  completionFunction CalcMode = \s -> if (length s == 0) then return [] else (completionFunctionWith "calc" [s] s)
+  commandToComplete CalcMode = id --send the whole string to `calc`
+  completionFunction CalcMode = \s -> if (length s == 0) then return [] else do
+    fmap lines $ runProcessWithInput "calc" [s] ""
   modeAction CalcMode _ = return () -- do nothing; this might copy the result to the clipboard
 
--- | Creates an autocompletion function given a command name, a list of args to send to the command and a filepath.
-completionFunctionWith :: String -> [String] -> String -> IO [String]
-completionFunctionWith cmd args s | s == "" || last s == ' ' = return []
-                             | otherwise                = do
-  paths <- fmap lines $ runProcessWithInput cmd args ""
-  return $ paths
+-- | Uses the program `hoogle` to search for functions
+instance XPrompt HoogleMode where
+  showXPrompt _ = "hoogle %s> "
+  commandToComplete _ = id
+  completionFunction _ = \s -> completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5",s]
+  modeAction _ ac = do
+    completions <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5","+"++ac]
+    completionsWithLink <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5","--link","+"++ac]
+    let link = do
+          index <- findIndex ((==) ac) completions --index in completions of the selected autocompletion item
+          let
+            itemWithLink = (!!) completionsWithLink index
+            indexOfLink  = findSeqIndex itemWithLink "-- http"
+          case indexOfLink of
+            Just li -> return $ drop (li + 3) itemWithLink
+            _      -> Nothing
+    case link of
+       Just l -> spawn $ "conkeror " ++ l
+       _      -> return ()
+
+-- | Receives a sequence and a subsequence, returns, if it exists, the index in which the subsequence appears in sequence
+-- Example:
+-- findSeqIndex "aababb" "b" == Just 2
+-- findSeqIndex "aababb" "bb" == Just 4
+findSeqIndex :: (Eq a) => [a] -> [a] -> Maybe Int
+findSeqIndex [] _ = Nothing
+findSeqIndex list sublist = let
+  findSequence' :: (Eq a) => [a] -> [a] -> Int -> Maybe Int
+  findSequence' [] _ _ = Nothing
+  findSequence' list'@(x:xs) sublist' i = let
+    firstN = take (length sublist') list'
+    in if (sublist' == firstN) then Just i else findSequence' xs sublist' (i+1)
+  in findSequence' list sublist 0
+
+
+-- | Creates an autocompletion function for a programm given the program's name and a list of args to send to the command.
+completionFunctionWith :: String -> [String] -> IO [String]
+completionFunctionWith cmd args = do fmap lines $ runProcessWithInput cmd args ""
 
 -- | Creates a prompt with the given modes
 launcherPrompt :: XPConfig -> [XPMode] -> X()
@@ -93,12 +128,13 @@ launcherPrompt config modes = mkXPromptWithModes modes config
 
 -- | Create a list of modes based on a list of extensions mapped to actions
 defaultLauncherModes :: ExtensionActions -> [XPMode]
-defaultLauncherModes actions = [XPT (LMode actions)
-                               , XPT (LRMode actions)
-                               , XPT CalcMode]
+defaultLauncherModes actions = [XPT $ HMode
+                               , XPT  $ LMode  actions
+                               , XPT $ LRMode actions
+                               , XPT $ CalcMode
+                               ]
 
--- | This function takes a path file and uses the map of extensions to find the one that matches
--- to spawn the process that corresponds.
+-- | This function takes a map of extensions and a path file. It uses the map to find the pattern that matches the file path, then the corresponding program (listed in the map) is spawned.
 spawnWithActions :: ExtensionActions -> FilePath -> X()
 spawnWithActions actions fp = do
   isDirectoryPath <- liftIO $ doesDirectoryExist fp
