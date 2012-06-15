@@ -34,9 +34,10 @@
    - XPrompt:
        - Switch to mode by name, 1. ':' at an empty buffer, 2. autocomplete name in buffer should happen, 3. switch to mode with enter (cancel stich with C-g)
 
+   - Read preference "browser" in XPConfig instead of spawning always "conkeror"
    - Wished commands
      at - execute commands at a later time
-     hoogle ?
+     hoogle@web (not installed)
      bash - is it possible with autocompletion ?
   -}
 
@@ -50,7 +51,7 @@ module XMonad.Actions.Launcher(
 
 import           Data.List        (findIndex)
 import qualified Data.Map         as M
-import           Data.Maybe       (fromMaybe)
+import           Data.Maybe       (fromJust, fromMaybe, isJust)
 import           System.Directory (doesDirectoryExist)
 import           XMonad           hiding (config)
 import           XMonad.Prompt
@@ -89,13 +90,25 @@ instance XPrompt HoogleMode where
   commandToComplete _ = id
   completionFunction _ = \s -> completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5",s]
   modeAction _ ac = do
-    completions <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5","+"++ac]
-    completionsWithLink <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5","--link","+"++ac]
+    -- if the result contains the word `module` or `class`, change the query to obtain results
+    -- this is some bad code, I'd appreciate if someone suggests a nicer way
+    let query = if (isJust $ findSeqIndex ac "keyword") then
+                  "+" ++ ac
+                else if (isJust $ findSeqIndex ac "class") then
+                       (drop (6 + fromJust (findSeqIndex ac "class")) ac)
+                     else if (isJust $ findSeqIndex ac "newtype") then
+                            (drop (8 + fromJust (findSeqIndex ac "newtype")) ac)
+                          else let
+                         i = findSeqIndex ac "module"
+                         isModule = isJust i
+                       in if (isModule) then (drop (7 + fromJust i) ac) else "+" ++ ac
+    completions <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5",query]
+    completionsWithLink <- liftIO $ completionFunctionWith "/home/kmels/.cabal/bin/hoogle" ["--count","5","--link",query]
     let link = do
           index <- findIndex ((==) ac) completions --index in completions of the selected autocompletion item
           let
             itemWithLink = (!!) completionsWithLink index
-            indexOfLink  = findSeqIndex itemWithLink "-- http"
+            indexOfLink  = findSeqIndex itemWithLink "-- http://"
           case indexOfLink of
             Just li -> return $ drop (li + 3) itemWithLink
             _      -> Nothing
@@ -105,17 +118,16 @@ instance XPrompt HoogleMode where
 
 -- | Receives a sequence and a subsequence, returns, if it exists, the index in which the subsequence appears in sequence
 -- Example:
--- findSeqIndex "aababb" "b" == Just 2
--- findSeqIndex "aababb" "bb" == Just 4
+-- findSeqIndex "abcabbc" "abc" == Just 0
+-- findSeqIndex "abcabbc" "abbc" == Just 3
+-- findSeqIndex findSeqIndex [1..] [5,6] == Just 4
+-- findSeqIndex [2,4..10] [2,1] == Nothing
 findSeqIndex :: (Eq a) => [a] -> [a] -> Maybe Int
 findSeqIndex [] _ = Nothing
-findSeqIndex list sublist = let
+findSeqIndex list sublist = findSequence' list sublist 0 where
   findSequence' :: (Eq a) => [a] -> [a] -> Int -> Maybe Int
   findSequence' [] _ _ = Nothing
-  findSequence' list'@(x:xs) sublist' i = let
-    firstN = take (length sublist') list'
-    in if (sublist' == firstN) then Just i else findSequence' xs sublist' (i+1)
-  in findSequence' list sublist 0
+  findSequence' list'@(x:xs) sublist' i = if (sublist' == take (length sublist') list') then Just i else findSequence' xs sublist' (i+1)
 
 
 -- | Creates an autocompletion function for a programm given the program's name and a list of args to send to the command.
